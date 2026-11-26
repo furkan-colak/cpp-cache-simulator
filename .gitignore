@@ -1,0 +1,6 @@
+*.exe
+*.obj
+*.o
+*.trace
+*.csv
+*.tmp
