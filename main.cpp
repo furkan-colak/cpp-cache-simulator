@@ -2,35 +2,35 @@
 #include <vector>
 #include <string>
 #include <ctime>
-#include <windows.h> 
+#include <cstdlib>
+#include <filesystem>
 #include "CacheSim.h"
 
+namespace fs = std::filesystem;
+
 // ==========================================
-// YARDIMCI FOKSIYONLAR (MAIN SADECE UI)
+// YARDIMCI FONKSIYONLAR (MAIN SADECE UI)
 // ==========================================
 
-// Klasordeki .trace dosyalarini bulur
-std::vector<std::string> getTraceFiles(const std::string& exePath) {// Program dosyasındaki verileri string olarak tutar
+// Klasordeki .trace dosyalarini bulur (Cross-platform C++17 std::filesystem)
+std::vector<std::string> getTraceFiles(const std::string& exePath) {
     std::vector<std::string> files;
-    WIN32_FIND_DATAA findData;
-    std::string searchPath = exePath + "\\*.trace";
-    HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);// Dosyaları bulur
-    if (hFind != INVALID_HANDLE_VALUE) {// Dosya bulunamazsa hata verir
-        do {
-            if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {// Dosya dizin olup olmadığını kontrol eder
-                files.push_back(findData.cFileName);
-            }
-        } while (FindNextFileA(hFind, &findData));
-        FindClose(hFind);
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(exePath, ec)) {
+        if (!ec && entry.is_regular_file() && entry.path().extension() == ".trace") {
+            files.push_back(entry.path().filename().string());
+        }
     }
+    std::sort(files.begin(), files.end());
     return files;
 }
 
-// CSV Dosyalarini Siler
+// CSV Dosyalarini Siler (Cross-platform C++17 std::filesystem)
 void clearResults() {
     std::cout << "\n[ISLEM] Gecmis sonuclar temizleniyor..." << std::endl;
-    bool del1 = DeleteFileA("simulation_results.csv");
-    bool del2 = DeleteFileA("comparison_results.csv");
+    std::error_code ec1, ec2;
+    bool del1 = fs::remove("simulation_results.csv", ec1);
+    bool del2 = fs::remove("comparison_results.csv", ec2);
     
     if (del1) std::cout << " -> 'simulation_results.csv' silindi." << std::endl;
     else std::cout << " -> 'simulation_results.csv' bulunamadi veya silinemedi." << std::endl;
@@ -48,19 +48,19 @@ struct RunResult {// Simülasyon sonucu
 
 // std::pair yerine struct
 RunResult runSimulation(const std::string& filename, bool silent = false) {
-    if (filename.empty()) return {0, 0};
+    if (filename.empty()) return {};
 
     std::ifstream file(filename);
     if (!file.is_open()) {
         std::cerr << "[HATA] Trace dosyasi acilamadi: " << filename << std::endl;
-        return {0};
+        return {};
     }
 
     MemorySystem system; // MMap dosyalari constructor'da olusur
     g_Config.CURRENT_TRACE_FILE = filename; // for CSV reporting
     
     char type;
-    unsigned long long address;
+    std::uint64_t address;
 
     if (!silent) {
         std::cout << "Simulasyon baslatiliyor: " << filename << " (Algorithm: " << g_Config.ALGORITHM << ")" << std::endl;
@@ -69,7 +69,7 @@ RunResult runSimulation(const std::string& filename, bool silent = false) {
 
     // Hizli I/O
     std::ios_base::sync_with_stdio(false); //Bağlantıyı kapatır
-    long long lineCount = 0;
+    std::int64_t lineCount = 0;
     while (file >> type >> std::hex >> address) {
         if (type == 'I' || type == 'L' || type == 'R') {
             system.processTrace(address, LOAD);
@@ -198,7 +198,7 @@ void runAssociativityTest(const std::string& filename) {
 
 // Test Konfigurasyonu
 struct TestConfig {
-    std::string algorithm;
+    ReplacementPolicy algorithm;
     bool prefetcher;
 };
 
@@ -213,7 +213,7 @@ void compareAlgorithms(const std::string& filename, const std::vector<TestConfig
     std::cout << "==========================================" << std::endl;
     std::cout << "Dosya: " << filename << std::endl;
     
-    std::string originalAlgo = g_Config.ALGORITHM; // Yedekle ayarlar bozulmamasi icin
+    ReplacementPolicy originalAlgo = g_Config.ALGORITHM; // Yedekle ayarlar bozulmamasi icin
     bool originalPrefetch = g_Config.PREFETCHER_ENABLED;
 
     struct ComparisonEntry {
@@ -234,7 +234,7 @@ void compareAlgorithms(const std::string& filename, const std::vector<TestConfig
         g_Config.ALGORITHM = cfg.algorithm;
         g_Config.PREFETCHER_ENABLED = cfg.prefetcher;
         
-        std::string displayName = cfg.algorithm + (cfg.prefetcher ? " (P+)" : "");
+        std::string displayName = std::string(getAlgorithmName(cfg.algorithm)) + (cfg.prefetcher ? " (P+)" : "");
         
         std::cout << "\n[" << displayName << "] Testi Calistiriliyor... "; 
         RunResult res = runSimulation(filename, true); // Silent
@@ -267,7 +267,7 @@ void compareAlgorithms(const std::string& filename, const std::vector<TestConfig
     std::cout << " +====================+==============+==========+==========+==========+======================+" << std::endl;
     setColor(COLOR_DEFAULT);
 
-    long long baseCycles = results[0].stats.cycles;
+    std::int64_t baseCycles = results[0].stats.cycles;
 
     for (const auto& r : results) {
          double diffPct = 0.0;
@@ -315,12 +315,13 @@ void compareAlgorithms(const std::string& filename, const std::vector<TestConfig
     setColor(COLOR_DEFAULT);
 }
 
-int main(int argc, char* argv[]) {
+int main() {
     // Hizli I/O (Main basinda olmasi daha saglikli)
     std::ios_base::sync_with_stdio(false); 
+    enableAnsiColors();
     
     // Random başlatıcı
-    std::srand((unsigned int)time(0));
+    std::srand(static_cast<unsigned int>(std::time(nullptr)));
     
     std::string exePath = ".";
     if (!loadConfig("config.txt")) {
@@ -357,7 +358,7 @@ int main(int argc, char* argv[]) {
             if (files.empty()) { std::cout << "Trace dosyasi yok!" << std::endl; continue; }
 
             std::cout << "\nTrace Dosyasi Secin:" << std::endl;
-            for (int i = 0; i < files.size(); i++) {
+            for (std::size_t i = 0; i < files.size(); i++) {
                 std::cout << "[" << (i+1) << "] " << files[i] << std::endl;
             }
             std::cout << "Dosya seciniz (Numara): ";
@@ -369,21 +370,21 @@ int main(int argc, char* argv[]) {
             }
             std::cin.ignore(1000, '\n'); // Tampon temizle (Enter karakterini yut)
 
-            if (fIdx >= 1 && fIdx <= (int)files.size()) selectedFile = files[fIdx-1];
+            if (fIdx >= 1 && fIdx <= static_cast<int>(files.size())) selectedFile = files[fIdx-1];
             else { std::cout << "Gecersiz numara!" << std::endl; continue; }
             
             if (choice == 1) {
                 // MODIFICATON FOR OPTION 1: Ask for Algorithm and Prefetcher
                 std::cout << "\n--- Calistirma Ayarlari ---" << std::endl;
                 setColor(COLOR_CYAN); std::cout << "Algoritma Secin:" << std::endl; setColor(COLOR_DEFAULT); 
-                for (size_t i = 0; i < KNOWN_ALGORITHMS.size(); ++i) std::cout << (i + 1) << ". " << KNOWN_ALGORITHMS[i] << std::endl;
+                for (std::size_t i = 0; i < KNOWN_ALGORITHMS.size(); ++i) std::cout << (i + 1) << ". " << KNOWN_ALGORITHMS[i].name << std::endl;
                 
                 int algoChoice;
                 std::cout << "Secim (1-" << KNOWN_ALGORITHMS.size() << "): "; 
                 if (!(std::cin >> algoChoice)) { std::cin.clear(); std::string x; std::getline(std::cin, x); algoChoice = 1; }
                 
-                std::string selectedAlgo = g_Config.ALGORITHM;
-                if (algoChoice >= 1 && algoChoice <= (int)KNOWN_ALGORITHMS.size()) selectedAlgo = KNOWN_ALGORITHMS[algoChoice - 1];
+                ReplacementPolicy selectedAlgo = g_Config.ALGORITHM;
+                if (algoChoice >= 1 && algoChoice <= static_cast<int>(KNOWN_ALGORITHMS.size())) selectedAlgo = KNOWN_ALGORITHMS[algoChoice - 1].policy;
                 
                 int prefetchChoice; 
                 std::cout << "Prefetcher Acik Olsun Mu? (1: Evet, 0: Hayir): "; 
@@ -391,7 +392,7 @@ int main(int argc, char* argv[]) {
                 bool prefetchEnabled = (prefetchChoice == 1);
                 
                 // Gecici Config Guncelleme
-                std::string oldAlgo = g_Config.ALGORITHM; 
+                ReplacementPolicy oldAlgo = g_Config.ALGORITHM; 
                 bool oldPrefetch = g_Config.PREFETCHER_ENABLED;
                 
                 g_Config.ALGORITHM = selectedAlgo; 
@@ -432,8 +433,8 @@ int main(int argc, char* argv[]) {
                         }
                         std::cout << "]" << std::endl;
                     }
-                    for (size_t i = 0; i < KNOWN_ALGORITHMS.size(); ++i) {
-                        std::cout << (i + 1) << ". " << KNOWN_ALGORITHMS[i] << std::endl;
+                    for (std::size_t i = 0; i < KNOWN_ALGORITHMS.size(); ++i) {
+                        std::cout << (i + 1) << ". " << KNOWN_ALGORITHMS[i].name << std::endl;
                     }
                     std::cout << "---------------------------" << std::endl;
                     std::cout << "8. SON EKLENENI SIL (Geri Al)" << std::endl;
@@ -444,13 +445,13 @@ int main(int argc, char* argv[]) {
                     if (!(std::cin >> subChoice)) {
                         std::cin.clear(); std::string ignore; std::getline(std::cin, ignore); subChoice = -1;
                     }
-                    if (subChoice >= 1 && subChoice <= (int)KNOWN_ALGORITHMS.size()) {
-                        std::string algo = KNOWN_ALGORITHMS[subChoice - 1];
-                        std::cout << "   -> " << algo << " icin Prefetcher Acik Olsun Mu? (1: Evet, 0: Hayir): ";
+                    if (subChoice >= 1 && subChoice <= static_cast<int>(KNOWN_ALGORITHMS.size())) {
+                        const auto& algoInfo = KNOWN_ALGORITHMS[subChoice - 1];
+                        std::cout << "   -> " << algoInfo.name << " icin Prefetcher Acik Olsun Mu? (1: Evet, 0: Hayir): ";
                         int pOp; 
                         if (!(std::cin >> pOp)) {std::cin.clear(); std::string x; std::getline(std::cin, x); pOp=0; }
                         bool pEnabled = (pOp == 1);
-                        comparisonList.push_back({algo, pEnabled});
+                        comparisonList.push_back({algoInfo.policy, pEnabled});
                     }
                     else if (subChoice == 8) {
                         if (!comparisonList.empty()) { comparisonList.pop_back(); } else { std::cout << "[UYARI] Liste zaten bos!" << std::endl; }
@@ -470,18 +471,18 @@ int main(int argc, char* argv[]) {
         else if (choice == 2) { // Tum dosyalari tara
             std::cout << "\n--- TUM TRACE DOSYALARINI TARA ---" << std::endl;
             setColor(COLOR_CYAN); std::cout << "Test icin Algoritma Secin:" << std::endl; setColor(COLOR_DEFAULT); 
-            for (size_t i = 0; i < KNOWN_ALGORITHMS.size(); ++i) std::cout << (i + 1) << ". " << KNOWN_ALGORITHMS[i] << std::endl;
+            for (std::size_t i = 0; i < KNOWN_ALGORITHMS.size(); ++i) std::cout << (i + 1) << ". " << KNOWN_ALGORITHMS[i].name << std::endl;
             int algoChoice;
             std::cout << "Secim (1-" << KNOWN_ALGORITHMS.size() << "): "; 
             if(!(std::cin >> algoChoice)) { std::cin.clear(); std::string x; std::getline(std::cin, x); algoChoice = 1; }
-            std::string selectedAlgoForScan = g_Config.ALGORITHM;
-            if (algoChoice >= 1 && algoChoice <= (int)KNOWN_ALGORITHMS.size()) selectedAlgoForScan = KNOWN_ALGORITHMS[algoChoice - 1];
+            ReplacementPolicy selectedAlgoForScan = g_Config.ALGORITHM;
+            if (algoChoice >= 1 && algoChoice <= static_cast<int>(KNOWN_ALGORITHMS.size())) selectedAlgoForScan = KNOWN_ALGORITHMS[algoChoice - 1].policy;
             
             int prefetchChoice; std::cout << "Prefetcher Acik Olsun Mu? (1: Evet, 0: Hayir): "; 
             if(!(std::cin >> prefetchChoice)) { std::cin.clear(); std::string x; std::getline(std::cin, x); prefetchChoice = 0; }
             bool prefetchEnabled = (prefetchChoice == 1);
             
-            std::string oldAlgo = g_Config.ALGORITHM; bool oldPrefetch = g_Config.PREFETCHER_ENABLED;
+            ReplacementPolicy oldAlgo = g_Config.ALGORITHM; bool oldPrefetch = g_Config.PREFETCHER_ENABLED;
             g_Config.ALGORITHM = selectedAlgoForScan; g_Config.PREFETCHER_ENABLED = prefetchEnabled;
             scanDirectory(exePath);
             g_Config.ALGORITHM = oldAlgo; g_Config.PREFETCHER_ENABLED = oldPrefetch;
